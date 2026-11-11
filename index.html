@@ -1,0 +1,1667 @@
+<!DOCTYPE html>
+<html lang="uz" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kunlik Hayot va O'qish Asistenti</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0284c7',
+                            600: '#0284c7',
+                            700: '#0369a1',
+                            800: '#075985',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Font Awesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Google Font Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(156, 163, 175, 0.4); border-radius: 9999px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(156, 163, 175, 0.7); }
+    </style>
+
+    <!-- JAVASCRIPT APP LOGIC PLACED IN HEAD TO PREVENT REFERENCE ERRORS -->
+    <script>
+        // --- DATA STORE STATE ---
+        let currentUser = null;
+        let users = JSON.parse(localStorage.getItem('dh_users')) || [];
+        let activeTab = 'dashboard';
+        let currentScheduleDay = 'Dushanba';
+
+        // User Data Collections (tied to active user)
+        let schedule = [];
+        let tasks = [];
+        let habits = [];
+        let reminders = [];
+        let stickyNotes = [];
+        let waterIntake = 0;
+        let pomodoroStats = { completedSessions: 0, totalMinutes: 0 };
+        let streakCount = 1;
+
+        // Pomodoro State Variables
+        let pomoMode = 'focus'; // 'focus', 'short', 'long'
+        let pomoTimeLeft = 25 * 60;
+        let pomoTimerId = null;
+        let pomoIsRunning = false;
+
+        // Ambient Audio State (Web Audio API Synthesizer)
+        let audioCtx = null;
+        let activeNoiseNode = null;
+
+        // Chart.js Instances
+        let tasksChartInstance = null;
+        let focusChartInstance = null;
+
+        // --- INIT APP ---
+        window.onload = function() {
+            checkAuthSession();
+        };
+
+        // --- AUTHENTICATION FUNCTIONS ---
+        function switchAuthTab(tab) {
+            const loginForm = document.getElementById('login-form');
+            const regForm = document.getElementById('register-form');
+            const tabLoginBtn = document.getElementById('tab-login-btn');
+            const tabRegBtn = document.getElementById('tab-register-btn');
+
+            if (!loginForm || !regForm) return;
+
+            if (tab === 'login') {
+                loginForm.classList.remove('hidden');
+                regForm.classList.add('hidden');
+                tabLoginBtn.className = "flex-1 py-4 text-center font-semibold text-sky-600 dark:text-sky-400 border-b-2 border-sky-600 dark:border-sky-400 transition";
+                tabRegBtn.className = "flex-1 py-4 text-center font-semibold text-slate-500 dark:text-slate-400 border-b-2 border-transparent hover:text-slate-700 dark:hover:text-slate-200 transition";
+            } else {
+                loginForm.classList.add('hidden');
+                regForm.classList.remove('hidden');
+                tabRegBtn.className = "flex-1 py-4 text-center font-semibold text-sky-600 dark:text-sky-400 border-b-2 border-sky-600 dark:border-sky-400 transition";
+                tabLoginBtn.className = "flex-1 py-4 text-center font-semibold text-slate-500 dark:text-slate-400 border-b-2 border-transparent hover:text-slate-700 dark:hover:text-slate-200 transition";
+            }
+        }
+
+        function handleRegister(e) {
+            e.preventDefault();
+            const fullName = document.getElementById('reg-fullname').value.trim();
+            const dob = document.getElementById('reg-dob').value;
+            const phone = document.getElementById('reg-phone').value.trim();
+            const username = document.getElementById('reg-username').value.trim().toLowerCase();
+            const password = document.getElementById('reg-password').value;
+
+            // Check existing user
+            if (users.find(u => u.username === username)) {
+                showToast("Ushbu username band! Boshqasini kiriting.", "error");
+                return;
+            }
+
+            const newUser = {
+                id: 'usr_' + Date.now(),
+                fullName,
+                dob,
+                phone,
+                username,
+                password,
+                createdAt: new Date().toISOString()
+            };
+
+            users.push(newUser);
+            localStorage.setItem('dh_users', JSON.stringify(users));
+            showToast("Muvaffaqiyatli ro'yxatdan o'tdingiz! Kirishingiz mumkin.", "success");
+            
+            // Auto fill & switch to login
+            document.getElementById('login-username').value = username;
+            document.getElementById('login-password').value = password;
+            switchAuthTab('login');
+        }
+
+        function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById('login-username').value.trim().toLowerCase();
+            const password = document.getElementById('login-password').value;
+
+            const user = users.find(u => u.username === username && u.password === password);
+
+            if (user) {
+                currentUser = user;
+                localStorage.setItem('dh_session', JSON.stringify(user));
+                showToast(`Xush kelibsiz, ${user.fullName}!`, "success");
+                loadUserData();
+                showDashboard();
+            } else {
+                showToast("Username yoki parol xato!", "error");
+            }
+        }
+
+        function checkAuthSession() {
+            const session = localStorage.getItem('dh_session');
+            if (session) {
+                currentUser = JSON.parse(session);
+                loadUserData();
+                showDashboard();
+            } else {
+                document.getElementById('auth-screen').classList.remove('hidden');
+                document.getElementById('dashboard-screen').classList.add('hidden');
+            }
+        }
+
+        function handleLogout() {
+            currentUser = null;
+            localStorage.removeItem('dh_session');
+            document.getElementById('auth-screen').classList.remove('hidden');
+            document.getElementById('dashboard-screen').classList.add('hidden');
+            closeModal('modal-profile');
+            showToast("Hisobingizdan chiqdingiz", "info");
+        }
+
+        // --- DATA PERSISTENCE PER USER ---
+        function loadUserData() {
+            if (!currentUser) return;
+            const uKey = `dh_data_${currentUser.id}`;
+            const data = JSON.parse(localStorage.getItem(uKey)) || {};
+
+            schedule = data.schedule || [
+                { id: '1', day: 'Dushanba', title: 'Matematika Tahlil', start: '08:30', end: '10:00', room: '102-xona' },
+                { id: '2', day: 'Dushanba', title: 'Fizika Ma\'ruza', start: '10:15', end: '11:45', room: 'B-korpus 3-amfiteatr' },
+                { id: '3', day: 'Seshanba', title: 'Ingliz Tili (IELTS)', start: '14:00', end: '15:30', room: 'Zoom Link' }
+            ];
+            tasks = data.tasks || [
+                { id: '1', title: 'Matematikadan 10 ta masala yechish', priority: 'high', category: "O'qish", date: '2026-11-15', status: 'todo' },
+                { id: '2', title: 'Ertalab yugurish', priority: 'medium', category: 'Shaxsiy', date: '2026-11-12', status: 'completed' }
+            ];
+            habits = data.habits || [
+                { id: '1', title: "30 daqiqa kitob o'qish", icon: 'fa-book', streak: 4, completedToday: false },
+                { id: '2', title: 'Ertalabki badan tarbiya', icon: 'fa-person-running', streak: 2, completedToday: true }
+            ];
+            reminders = data.reminders || [
+                { id: '1', title: "Oraliq Nazorat Imtihoni", date: '2026-11-20' },
+                { id: '2', title: "Do'stimning tug'ilgan kuni", date: '2026-12-05' }
+            ];
+            stickyNotes = data.stickyNotes || [
+                { id: '1', title: 'Loyiha g\'oyasi', text: 'Yangi web app uchun Tailwind UI elementlaridan foydalanish', color: 'yellow' }
+            ];
+            waterIntake = data.waterIntake || 750;
+            pomodoroStats = data.pomodoroStats || { completedSessions: 3, totalMinutes: 75 };
+            streakCount = data.streakCount || 5;
+
+            // UI user headers
+            document.getElementById('user-display-name').innerText = currentUser.fullName;
+            document.getElementById('user-display-username').innerText = `@${currentUser.username}`;
+            document.getElementById('user-avatar').innerText = currentUser.fullName.charAt(0).toUpperCase();
+            document.getElementById('dash-greeting').innerText = `Salom, ${currentUser.fullName.split(' ')[0]}!`;
+
+            // Set current date string
+            const now = new Date();
+            const options = { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' };
+            document.getElementById('dash-date').innerText = now.toLocaleDateString('uz-UZ', options);
+
+            renderAll();
+        }
+
+        function saveUserData() {
+            if (!currentUser) return;
+            const uKey = `dh_data_${currentUser.id}`;
+            const data = {
+                schedule,
+                tasks,
+                habits,
+                reminders,
+                stickyNotes,
+                waterIntake,
+                pomodoroStats,
+                streakCount
+            };
+            localStorage.setItem(uKey, JSON.stringify(data));
+            renderAll();
+        }
+
+        // --- NAVIGATION & UI VIEW SWITCHING ---
+        function showDashboard() {
+            document.getElementById('auth-screen').classList.add('hidden');
+            document.getElementById('dashboard-screen').classList.remove('hidden');
+            switchView('dashboard');
+        }
+
+        function switchView(viewName) {
+            activeTab = viewName;
+            
+            // Hide all views
+            document.querySelectorAll('.view-content').forEach(el => el.classList.add('hidden'));
+            
+            // Show selected view
+            const target = document.getElementById(`view-${viewName}`);
+            if (target) target.classList.remove('hidden');
+
+            // Nav active states
+            document.querySelectorAll('.nav-item').forEach(el => {
+                el.className = "nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700/50 transition";
+            });
+            const activeNav = document.getElementById(`nav-${viewName}`);
+            if (activeNav) {
+                activeNav.className = "nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-semibold text-sm bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400 transition";
+            }
+
+            // Update Header Title
+            const titles = {
+                dashboard: "Bosh sahifa",
+                schedule: "Dars va Kun Tartibi",
+                tasks: "Vazifalar (To-Do)",
+                pomodoro: "Pomodoro Taymeri",
+                habits: "Odatlar va Suv Balansi",
+                reminders: "Eslatmalar va Sanalar",
+                notes: "Tezkor Qaydlar",
+                analytics: "Statistika va Tahlillar"
+            };
+            document.getElementById('page-title').innerText = titles[viewName] || "Dashboard";
+
+            if (viewName === 'analytics') {
+                renderCharts();
+            }
+
+            // Auto close mobile sidebar
+            document.getElementById('sidebar').classList.add('-translate-x-full');
+            document.getElementById('sidebar-overlay').classList.add('hidden');
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('sidebar-overlay');
+            sidebar.classList.toggle('-translate-x-full');
+            overlay.classList.toggle('hidden');
+        }
+
+        function toggleDarkMode() {
+            document.documentElement.classList.toggle('dark');
+            const icon = document.getElementById('theme-icon');
+            if (document.documentElement.classList.contains('dark')) {
+                icon.className = "fa-solid fa-sun";
+            } else {
+                icon.className = "fa-solid fa-moon";
+            }
+        }
+
+        // --- RENDER FUNCTIONS ---
+        function renderAll() {
+            renderDashboard();
+            renderSchedule();
+            renderTasks();
+            renderHabits();
+            renderReminders();
+            renderNotes();
+            updatePomodoroDisplay();
+        }
+
+        function renderDashboard() {
+            // Stats
+            const completedCount = tasks.filter(t => t.status === 'completed').length;
+            document.getElementById('dash-completed-tasks').innerText = completedCount;
+            document.getElementById('stat-tasks-count').innerText = `${completedCount}/${tasks.length}`;
+            document.getElementById('stat-pomodoro-min').innerText = `${pomodoroStats.totalMinutes} daq`;
+            document.getElementById('stat-water-intake').innerText = `${waterIntake} / 2000 ml`;
+            document.getElementById('dash-streak').innerText = streakCount;
+
+            // Urgent Tasks (top 3 priority)
+            const urgentContainer = document.getElementById('dash-urgent-tasks');
+            const uncompletedTasks = tasks.filter(t => t.status !== 'completed');
+            if (uncompletedTasks.length === 0) {
+                urgentContainer.innerHTML = `<p class="text-xs text-slate-400 py-2">Barcha vazifalar bajarilgan! Yaxshi ish! 🎉</p>`;
+            } else {
+                urgentContainer.innerHTML = uncompletedTasks.slice(0, 3).map(t => `
+                    <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700/40 rounded-xl border border-slate-100 dark:border-slate-700">
+                        <div class="flex items-center space-x-3">
+                            <button onclick="toggleTaskStatus('${t.id}')" class="text-slate-300 hover:text-emerald-500 transition"><i class="fa-regular fa-circle text-lg"></i></button>
+                            <span class="text-sm font-medium text-slate-800 dark:text-slate-200">${t.title}</span>
+                        </div>
+                        <span class="px-2.5 py-0.5 text-[10px] font-semibold rounded-full ${t.priority === 'high' ? 'bg-red-100 text-red-600 dark:bg-red-950/40' : 'bg-amber-100 text-amber-600'}">${t.priority.toUpperCase()}</span>
+                    </div>
+                `).join('');
+            }
+
+            // Today's schedule preview
+            const schedContainer = document.getElementById('dash-today-schedule');
+            const todaySch = schedule.filter(s => s.day === currentScheduleDay);
+            document.getElementById('stat-lessons-count').innerText = `${todaySch.length} ta`;
+            if (todaySch.length === 0) {
+                schedContainer.innerHTML = `<p class="text-xs text-slate-400 py-2">Bugun uchun rejalashtirilgan darslar yo'q.</p>`;
+            } else {
+                schedContainer.innerHTML = todaySch.map(s => `
+                    <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700/40 rounded-xl">
+                        <div class="flex items-center space-x-3">
+                            <span class="text-xs font-bold text-sky-600 dark:text-sky-400 bg-sky-100 dark:bg-sky-950/60 px-2 py-1 rounded-lg">${s.start} - ${s.end}</span>
+                            <div>
+                                <h4 class="text-sm font-semibold text-slate-800 dark:text-slate-200">${s.title}</h4>
+                                <p class="text-xs text-slate-400">${s.room || 'Xona ko\'rsatilmagan'}</p>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            // Habits Widget
+            const habitsWidget = document.getElementById('dash-habits-list');
+            habitsWidget.innerHTML = habits.map(h => `
+                <div class="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-700/40 rounded-xl">
+                    <div class="flex items-center space-x-2.5">
+                        <i class="fa-solid ${h.icon} text-sky-500 text-sm"></i>
+                        <span class="text-xs font-medium">${h.title}</span>
+                    </div>
+                    <button onclick="toggleHabitToday('${h.id}')" class="px-2 py-1 rounded-lg text-[11px] font-bold ${h.completedToday ? 'bg-emerald-500 text-white' : 'bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-300'}">
+                        ${h.completedToday ? 'Bajarildi ✓' : 'Bajarish'}
+                    </button>
+                </div>
+            `).join('');
+
+            // Upcoming Reminders Countdown
+            const datesWidget = document.getElementById('dash-upcoming-dates');
+            datesWidget.innerHTML = reminders.map(r => {
+                const daysLeft = Math.ceil((new Date(r.date) - new Date()) / (1000 * 60 * 60 * 24));
+                return `
+                    <div class="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-700/40 rounded-xl text-xs">
+                        <span class="font-medium text-slate-800 dark:text-slate-200">${r.title}</span>
+                        <span class="px-2 py-0.5 bg-indigo-100 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 font-bold rounded-lg">${daysLeft > 0 ? daysLeft + ' kun qoldi' : 'Bugun!'}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // --- SCHEDULE MANAGEMENT ---
+        function filterScheduleDay(day) {
+            currentScheduleDay = day;
+            document.querySelectorAll('.day-tab').forEach(btn => {
+                if (btn.innerText.trim() === day) {
+                    btn.className = "day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-sky-600 text-white shadow-sm";
+                } else {
+                    btn.className = "day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition";
+                }
+            });
+            renderSchedule();
+        }
+
+        function renderSchedule() {
+            const container = document.getElementById('schedule-list-container');
+            const dayItems = schedule.filter(s => s.day === currentScheduleDay);
+
+            if (dayItems.length === 0) {
+                container.innerHTML = `<div class="p-8 text-center text-slate-400 text-sm">Ushbu kun uchun darslar kiritilmagan.</div>`;
+                return;
+            }
+
+            container.innerHTML = dayItems.map(item => `
+                <div class="p-4 flex items-center justify-between hover:bg-slate-50/50 dark:hover:bg-slate-700/30 transition">
+                    <div class="flex items-center space-x-4">
+                        <div class="w-12 h-12 rounded-xl bg-sky-50 dark:bg-sky-950/50 text-sky-600 dark:text-sky-400 flex flex-col items-center justify-center font-bold text-xs">
+                            <span>${item.start}</span>
+                            <span class="text-[10px] text-slate-400">${item.end}</span>
+                        </div>
+                        <div>
+                            <h4 class="font-bold text-slate-900 dark:text-white text-base">${item.title}</h4>
+                            <p class="text-xs text-slate-400 mt-0.5"><i class="fa-solid fa-location-dot mr-1 text-sky-500"></i> ${item.room || 'Xona belgilanmagan'}</p>
+                        </div>
+                    </div>
+                    <button onclick="deleteScheduleItem('${item.id}')" class="text-slate-300 hover:text-red-500 p-2 transition"><i class="fa-solid fa-trash-can"></i></button>
+                </div>
+            `).join('');
+        }
+
+        function saveScheduleItem(e) {
+            e.preventDefault();
+            const newItem = {
+                id: 'sch_' + Date.now(),
+                day: document.getElementById('sch-day').value,
+                title: document.getElementById('sch-title').value.trim(),
+                start: document.getElementById('sch-start').value,
+                end: document.getElementById('sch-end').value,
+                room: document.getElementById('sch-room').value.trim()
+            };
+            schedule.push(newItem);
+            saveUserData();
+            closeModal('modal-add-schedule');
+            showToast("Dars muvaffaqiyatli qo'shildi!", "success");
+        }
+
+        function deleteScheduleItem(id) {
+            schedule = schedule.filter(s => s.id !== id);
+            saveUserData();
+            showToast("Dars o'chirildi", "info");
+        }
+
+        // --- TASKS (TO-DO) MANAGEMENT ---
+        function renderTasks() {
+            const container = document.getElementById('tasks-container');
+            const searchInput = document.getElementById('task-search-input');
+            const searchVal = searchInput ? searchInput.value.toLowerCase() : '';
+            const statusFilter = document.getElementById('task-filter-status') ? document.getElementById('task-filter-status').value : 'all';
+            const priorityFilter = document.getElementById('task-filter-priority') ? document.getElementById('task-filter-priority').value : 'all';
+
+            let filtered = tasks.filter(t => {
+                const matchesSearch = t.title.toLowerCase().includes(searchVal);
+                const matchesStatus = statusFilter === 'all' || t.status === statusFilter;
+                const matchesPriority = priorityFilter === 'all' || t.priority === priorityFilter;
+                return matchesSearch && matchesStatus && matchesPriority;
+            });
+
+            if (filtered.length === 0) {
+                container.innerHTML = `<div class="col-span-full p-8 text-center text-slate-400 text-sm">Vazifalar topilmadi.</div>`;
+                return;
+            }
+
+            container.innerHTML = filtered.map(task => `
+                <div class="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex flex-col justify-between space-y-4">
+                    <div>
+                        <div class="flex items-start justify-between gap-2 mb-2">
+                            <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                task.priority === 'high' ? 'bg-red-100 text-red-600 dark:bg-red-950/50' : 
+                                task.priority === 'medium' ? 'bg-amber-100 text-amber-600 dark:bg-amber-950/50' : 'bg-blue-100 text-blue-600'
+                            }">${task.priority}</span>
+                            <span class="text-xs text-slate-400"><i class="fa-regular fa-calendar mr-1"></i>${task.date}</span>
+                        </div>
+                        <h4 class="font-bold text-slate-900 dark:text-white ${task.status === 'completed' ? 'line-through text-slate-400 dark:text-slate-500' : ''}">${task.title}</h4>
+                        <span class="inline-block mt-2 px-2 py-0.5 bg-slate-100 dark:bg-slate-700 text-slate-500 text-[11px] rounded-md font-medium">${task.category}</span>
+                    </div>
+
+                    <div class="flex items-center justify-between pt-3 border-t border-slate-100 dark:border-slate-700">
+                        <select onchange="updateTaskStatus('${task.id}', this.value)" class="bg-slate-50 dark:bg-slate-700 text-xs font-semibold rounded-lg px-2.5 py-1.5 outline-none">
+                            <option value="todo" ${task.status === 'todo' ? 'selected' : ''}>Bajarilmagan</option>
+                            <option value="in_progress" ${task.status === 'in_progress' ? 'selected' : ''}>Jarayonda</option>
+                            <option value="completed" ${task.status === 'completed' ? 'selected' : ''}>Bajarildi</option>
+                        </select>
+                        <button onclick="deleteTask('${task.id}')" class="text-slate-300 hover:text-red-500 p-1.5 transition"><i class="fa-solid fa-trash-can text-sm"></i></button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function saveTaskItem(e) {
+            e.preventDefault();
+            const newTask = {
+                id: 'task_' + Date.now(),
+                title: document.getElementById('task-title').value.trim(),
+                priority: document.getElementById('task-priority').value,
+                date: document.getElementById('task-date').value,
+                category: document.getElementById('task-category').value,
+                status: 'todo'
+            };
+            tasks.push(newTask);
+            saveUserData();
+            closeModal('modal-add-task');
+            showToast("Yangi vazifa qo'shildi!", "success");
+        }
+
+        function toggleTaskStatus(id) {
+            const t = tasks.find(x => x.id === id);
+            if (t) {
+                t.status = t.status === 'completed' ? 'todo' : 'completed';
+                saveUserData();
+            }
+        }
+
+        function updateTaskStatus(id, newStatus) {
+            const t = tasks.find(x => x.id === id);
+            if (t) {
+                t.status = newStatus;
+                saveUserData();
+            }
+        }
+
+        function deleteTask(id) {
+            tasks = tasks.filter(t => t.id !== id);
+            saveUserData();
+            showToast("Vazifa o'chirildi", "info");
+        }
+
+        // --- POMODORO TIMER LOGIC ---
+        function setPomodoroMode(mode) {
+            pomoMode = mode;
+            if (pomoTimerId) clearInterval(pomoTimerId);
+            pomoIsRunning = false;
+            document.getElementById('pomo-start-btn').innerHTML = `<i class="fa-solid fa-play"></i>`;
+
+            const btnFocus = document.getElementById('pomo-mode-focus');
+            const btnShort = document.getElementById('pomo-mode-short');
+            const btnLong = document.getElementById('pomo-mode-long');
+
+            btnFocus.className = "px-5 py-2 rounded-xl text-xs font-semibold text-slate-500 transition";
+            btnShort.className = "px-5 py-2 rounded-xl text-xs font-semibold text-slate-500 transition";
+            btnLong.className = "px-5 py-2 rounded-xl text-xs font-semibold text-slate-500 transition";
+
+            if (mode === 'focus') {
+                pomoTimeLeft = 25 * 60;
+                btnFocus.className = "px-5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-slate-800 text-sky-600 shadow-sm transition";
+                document.getElementById('pomo-status-text').innerText = "Fokus Vaqti";
+            } else if (mode === 'short') {
+                pomoTimeLeft = 5 * 60;
+                btnShort.className = "px-5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-slate-800 text-sky-600 shadow-sm transition";
+                document.getElementById('pomo-status-text').innerText = "Qisqa Tanaffus";
+            } else {
+                pomoTimeLeft = 15 * 60;
+                btnLong.className = "px-5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-slate-800 text-sky-600 shadow-sm transition";
+                document.getElementById('pomo-status-text').innerText = "Uzun Tanaffus";
+            }
+            updatePomodoroDisplay();
+        }
+
+        function togglePomodoro() {
+            if (pomoIsRunning) {
+                clearInterval(pomoTimerId);
+                pomoIsRunning = false;
+                document.getElementById('pomo-start-btn').innerHTML = `<i class="fa-solid fa-play"></i>`;
+            } else {
+                pomoIsRunning = true;
+                document.getElementById('pomo-start-btn').innerHTML = `<i class="fa-solid fa-pause"></i>`;
+                pomoTimerId = setInterval(() => {
+                    pomoTimeLeft--;
+                    updatePomodoroDisplay();
+                    if (pomoTimeLeft <= 0) {
+                        clearInterval(pomoTimerId);
+                        pomoIsRunning = false;
+                        document.getElementById('pomo-start-btn').innerHTML = `<i class="fa-solid fa-play"></i>`;
+                        playBeepSound();
+                        showToast("Pomodoro seansi yakunlandi!", "success");
+
+                        if (pomoMode === 'focus') {
+                            pomodoroStats.completedSessions += 1;
+                            pomodoroStats.totalMinutes += 25;
+                            saveUserData();
+                        }
+                    }
+                }, 1000);
+            }
+        }
+
+        function resetPomodoro() {
+            setPomodoroMode(pomoMode);
+        }
+
+        function updatePomodoroDisplay() {
+            const minutes = Math.floor(pomoTimeLeft / 60);
+            const seconds = pomoTimeLeft % 60;
+            const displayStr = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            document.getElementById('pomo-timer-display').innerText = displayStr;
+
+            // Total circle progress math
+            let total = 25 * 60;
+            if (pomoMode === 'short') total = 5 * 60;
+            if (pomoMode === 'long') total = 15 * 60;
+
+            const circle = document.getElementById('pomo-progress-circle');
+            const circumference = 276.46;
+            const offset = circumference - (pomoTimeLeft / total) * circumference;
+            circle.style.strokeDashoffset = offset;
+
+            document.getElementById('pomo-sessions-count').innerText = pomodoroStats.completedSessions;
+            document.getElementById('pomo-total-minutes').innerText = pomodoroStats.totalMinutes;
+        }
+
+        function playBeepSound() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+                osc.connect(ctx.destination);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.8);
+            } catch(e) {}
+        }
+
+        // --- HABITS & WATER MANAGEMENT ---
+        function renderHabits() {
+            const container = document.getElementById('habits-full-list');
+            container.innerHTML = habits.map(h => `
+                <div class="flex items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-700/50 rounded-xl border border-slate-100 dark:border-slate-700">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 rounded-xl bg-sky-100 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 flex items-center justify-center text-lg">
+                            <i class="fa-solid ${h.icon}"></i>
+                        </div>
+                        <div>
+                            <h4 class="font-bold text-slate-900 dark:text-white text-sm">${h.title}</h4>
+                            <span class="text-xs text-amber-500 font-semibold"><i class="fa-solid fa-fire mr-1"></i> ${h.streak} kunlik streak</span>
+                        </div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button onclick="toggleHabitToday('${h.id}')" class="px-3 py-1.5 rounded-xl text-xs font-bold transition ${h.completedToday ? 'bg-emerald-500 text-white shadow-md shadow-emerald-500/20' : 'bg-slate-200 dark:bg-slate-600 text-slate-700 dark:text-slate-200'}">
+                            ${h.completedToday ? 'Bajarildi ✓' : 'Bajarildi deb belgilash'}
+                        </button>
+                        <button onclick="deleteHabit('${h.id}')" class="text-slate-300 hover:text-red-500 p-1.5"><i class="fa-solid fa-trash-can"></i></button>
+                    </div>
+                </div>
+            `).join('');
+
+            document.getElementById('water-display-amount').innerText = `${waterIntake} ml`;
+        }
+
+        function saveHabitItem(e) {
+            e.preventDefault();
+            const newHabit = {
+                id: 'hab_' + Date.now(),
+                title: document.getElementById('habit-title').value.trim(),
+                icon: document.getElementById('habit-icon').value,
+                streak: 1,
+                completedToday: false
+            };
+            habits.push(newHabit);
+            saveUserData();
+            closeModal('modal-add-habit');
+            showToast("Odat qo'shildi!", "success");
+        }
+
+        function toggleHabitToday(id) {
+            const h = habits.find(x => x.id === id);
+            if (h) {
+                h.completedToday = !h.completedToday;
+                if (h.completedToday) h.streak += 1;
+                else h.streak = Math.max(0, h.streak - 1);
+                saveUserData();
+            }
+        }
+
+        function deleteHabit(id) {
+            habits = habits.filter(h => h.id !== id);
+            saveUserData();
+            showToast("Odat o'chirildi", "info");
+        }
+
+        function addWater(amount) {
+            waterIntake += amount;
+            saveUserData();
+            showToast(`+${amount} ml suv qo'shildi! 💧`, "info");
+        }
+
+        function resetWater() {
+            waterIntake = 0;
+            saveUserData();
+        }
+
+        // --- REMINDERS & STICKY NOTES ---
+        function renderReminders() {
+            const container = document.getElementById('reminders-list-container');
+            container.innerHTML = reminders.map(r => {
+                const daysLeft = Math.ceil((new Date(r.date) - new Date()) / (1000 * 60 * 60 * 24));
+                return `
+                    <div class="bg-white dark:bg-slate-800 p-5 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex flex-col justify-between space-y-4">
+                        <div class="flex items-start justify-between">
+                            <div>
+                                <span class="text-xs text-slate-400"><i class="fa-regular fa-calendar mr-1"></i>${r.date}</span>
+                                <h4 class="font-bold text-slate-900 dark:text-white text-base mt-1">${r.title}</h4>
+                            </div>
+                            <button onclick="deleteReminder('${r.id}')" class="text-slate-300 hover:text-red-500"><i class="fa-solid fa-trash-can"></i></button>
+                        </div>
+                        <div class="bg-sky-50 dark:bg-sky-950/40 p-3 rounded-xl text-center">
+                            <span class="block text-2xl font-black text-sky-600 dark:text-sky-400">${daysLeft > 0 ? daysLeft : 0}</span>
+                            <span class="text-[11px] font-semibold text-sky-800 dark:text-sky-300 uppercase">Qolgan kunlar</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function saveReminderItem(e) {
+            e.preventDefault();
+            const newRem = {
+                id: 'rem_' + Date.now(),
+                title: document.getElementById('rem-title').value.trim(),
+                date: document.getElementById('rem-date').value
+            };
+            reminders.push(newRem);
+            saveUserData();
+            closeModal('modal-add-reminder');
+            showToast("Eslatma qo'shildi!", "success");
+        }
+
+        function deleteReminder(id) {
+            reminders = reminders.filter(r => r.id !== id);
+            saveUserData();
+        }
+
+        function renderNotes() {
+            const container = document.getElementById('notes-container');
+            const colorClasses = {
+                yellow: 'bg-amber-100 text-amber-900 border-amber-200',
+                blue: 'bg-sky-100 text-sky-900 border-sky-200',
+                green: 'bg-emerald-100 text-emerald-900 border-emerald-200',
+                purple: 'bg-purple-100 text-purple-900 border-purple-200'
+            };
+
+            container.innerHTML = stickyNotes.map(n => `
+                <div class="${colorClasses[n.color] || colorClasses.yellow} p-5 rounded-2xl border shadow-sm flex flex-col justify-between space-y-3">
+                    <div>
+                        <h4 class="font-bold text-base mb-1">${n.title}</h4>
+                        <p class="text-xs leading-relaxed whitespace-pre-line">${n.text}</p>
+                    </div>
+                    <div class="flex justify-end pt-2">
+                        <button onclick="deleteStickyNote('${n.id}')" class="text-slate-500 hover:text-red-600 p-1"><i class="fa-solid fa-trash-can text-sm"></i></button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function saveStickyNote(e) {
+            e.preventDefault();
+            const selectedColor = document.querySelector('input[name="note-color"]:checked').value;
+            const newNote = {
+                id: 'note_' + Date.now(),
+                title: document.getElementById('note-title').value.trim(),
+                text: document.getElementById('note-text').value.trim(),
+                color: selectedColor
+            };
+            stickyNotes.push(newNote);
+            saveUserData();
+            closeModal('modal-add-note');
+            showToast("Qayd yaratildi!", "success");
+        }
+
+        function deleteStickyNote(id) {
+            stickyNotes = stickyNotes.filter(n => n.id !== id);
+            saveUserData();
+        }
+
+        // --- CHARTS (CHART.JS) ---
+        function renderCharts() {
+            // Task Completion Donut Chart
+            const completed = tasks.filter(t => t.status === 'completed').length;
+            const inProgress = tasks.filter(t => t.status === 'in_progress').length;
+            const todo = tasks.filter(t => t.status === 'todo').length;
+
+            const ctxTasks = document.getElementById('chart-tasks').getContext('2d');
+            if (tasksChartInstance) tasksChartInstance.destroy();
+
+            tasksChartInstance = new Chart(ctxTasks, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Bajarildi', 'Jarayonda', 'Bajarilmagan'],
+                    datasets: [{
+                        data: [completed, inProgress, todo],
+                        backgroundColor: ['#10b981', '#f59e0b', '#ef4444']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+
+            // Weekly Focus Hours Bar Chart
+            const ctxFocus = document.getElementById('chart-focus').getContext('2d');
+            if (focusChartInstance) focusChartInstance.destroy();
+
+            focusChartInstance = new Chart(ctxFocus, {
+                type: 'bar',
+                data: {
+                    labels: ['Dush', 'Sesh', 'Chor', 'Pay', 'Jum', 'Shan', 'Yak'],
+                    datasets: [{
+                        label: 'Fokus daqiqalari',
+                        data: [45, 60, 25, 90, 50, 120, pomodoroStats.totalMinutes],
+                        backgroundColor: '#0284c7',
+                        borderRadius: 8
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        }
+
+        // --- AMBIENT AUDIO SYNTHESIZER ---
+        function toggleAmbientModal() {
+            document.getElementById('modal-ambient').classList.toggle('hidden');
+        }
+
+        function playAmbientSound(type) {
+            if (activeNoiseNode) {
+                activeNoiseNode.stop();
+                activeNoiseNode = null;
+                showToast("Ovoz to'xtatildi", "info");
+                return;
+            }
+
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const bufferSize = audioCtx.sampleRate * 2;
+                const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                const output = noiseBuffer.getChannelData(0);
+
+                for (let i = 0; i < bufferSize; i++) {
+                    output[i] = Math.random() * 2 - 1;
+                }
+
+                const whiteNoise = audioCtx.createBufferSource();
+                whiteNoise.buffer = noiseBuffer;
+                whiteNoise.loop = true;
+
+                const filter = audioCtx.createBiquadFilter();
+                filter.type = type === 'rain' ? 'lowpass' : 'bandpass';
+                filter.frequency.value = type === 'rain' ? 800 : 400;
+
+                whiteNoise.connect(filter);
+                filter.connect(audioCtx.destination);
+                whiteNoise.start();
+
+                activeNoiseNode = whiteNoise;
+                showToast(`${type === 'rain' ? "Yomg'ir" : "O'rmon"} ovozi yoqildi 🎧`, "success");
+            } catch(e) {
+                showToast("Ovozni ijro etib bo'lmadi", "error");
+            }
+        }
+
+        // --- HELPERS / MODALS / TOASTS ---
+        function openModal(id) {
+            document.getElementById(id).classList.remove('hidden');
+        }
+
+        function closeModal(id) {
+            document.getElementById(id).classList.add('hidden');
+        }
+
+        function showProfileModal() {
+            if (!currentUser) return;
+            const content = document.getElementById('profile-modal-content');
+            content.innerHTML = `
+                <div class="flex items-center space-x-3 mb-4">
+                    <div class="w-12 h-12 rounded-full bg-sky-500 text-white font-bold text-lg flex items-center justify-center">
+                        ${currentUser.fullName.charAt(0)}
+                    </div>
+                    <div>
+                        <h4 class="font-bold text-slate-900 dark:text-white text-base">${currentUser.fullName}</h4>
+                        <p class="text-xs text-slate-400">@${currentUser.username}</p>
+                    </div>
+                </div>
+                <div class="space-y-2 border-t border-slate-100 dark:border-slate-700 pt-3">
+                    <p><strong>Tug'ilgan sana:</strong> ${currentUser.dob}</p>
+                    <p><strong>Telefon:</strong> ${currentUser.phone || "Kiritilmagan"}</p>
+                    <p><strong>Ro'yxatdan o'tilgan:</strong> ${new Date(currentUser.createdAt).toLocaleDateString('uz-UZ')}</p>
+                </div>
+            `;
+            openModal('modal-profile');
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+            const toast = document.createElement('div');
+
+            const bgClasses = {
+                success: 'bg-emerald-600 text-white',
+                error: 'bg-red-600 text-white',
+                info: 'bg-slate-800 text-white'
+            };
+
+            toast.className = `p-4 rounded-xl shadow-xl text-xs font-semibold flex items-center justify-between pointer-events-auto transform translate-y-2 opacity-0 transition-all duration-300 ${bgClasses[type]}`;
+            toast.innerHTML = `
+                <span>${message}</span>
+                <button onclick="this.parentElement.remove()" class="ml-3 text-white/70 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+            `;
+
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 h-full flex flex-col transition-colors duration-200">
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none"></div>
+
+    <!-- MAIN APP WRAPPER -->
+    <div id="app" class="h-full flex flex-col">
+        <!-- AUTH SECTION (Login / Register) -->
+        <div id="auth-screen" class="min-h-screen flex items-center justify-center p-4 bg-gradient-to-br from-sky-500/10 via-indigo-500/10 to-purple-500/10 dark:from-slate-900 dark:to-slate-950">
+            <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-100 dark:border-slate-700 w-full max-w-md overflow-hidden transition-all">
+                
+                <!-- Auth Toggle Header -->
+                <div class="flex border-b border-slate-100 dark:border-slate-700">
+                    <button id="tab-login-btn" onclick="switchAuthTab('login')" class="flex-1 py-4 text-center font-semibold text-sky-600 dark:text-sky-400 border-b-2 border-sky-600 dark:border-sky-400 transition">
+                        <i class="fa-solid font-bold fa-right-to-bracket mr-2"></i>Kirish
+                    </button>
+                    <button id="tab-register-btn" onclick="switchAuthTab('register')" class="flex-1 py-4 text-center font-semibold text-slate-500 dark:text-slate-400 border-b-2 border-transparent hover:text-slate-700 dark:hover:text-slate-200 transition">
+                        <i class="fa-solid fa-user-plus mr-2"></i>Ro'yxatdan o'tish
+                    </button>
+                </div>
+
+                <div class="p-6">
+                    <!-- LOGIN FORM -->
+                    <form id="login-form" onsubmit="handleLogin(event)" class="space-y-4">
+                        <div class="text-center mb-6">
+                            <h2 class="text-2xl font-bold text-slate-900 dark:text-white">Xush kelibsiz!</h2>
+                            <p class="text-slate-500 dark:text-slate-400 text-sm mt-1">Davom etish uchun hisobingizga kiring</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Username</label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400"><i class="fa-solid fa-at"></i></span>
+                                <input type="text" id="login-username" required class="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none text-sm transition" placeholder="masalan: user123">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Parol</label>
+                            <div class="relative">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400"><i class="fa-solid fa-lock"></i></span>
+                                <input type="password" id="login-password" required class="w-full pl-10 pr-4 py-2.5 bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none text-sm transition" placeholder="••••••••">
+                            </div>
+                        </div>
+                        <button type="submit" class="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-xl shadow-lg shadow-sky-500/20 active:scale-[0.98] transition">
+                            Kirish <i class="fa-solid fa-arrow-right ml-2"></i>
+                        </button>
+                    </form>
+
+                    <!-- REGISTER FORM -->
+                    <form id="register-form" onsubmit="handleRegister(event)" class="space-y-3 hidden">
+                        <div class="text-center mb-4">
+                            <h2 class="text-2xl font-bold text-slate-900 dark:text-white">Ro'yxatdan o'tish</h2>
+                            <p class="text-slate-500 dark:text-slate-400 text-sm mt-1">Yangi profil yarating va hayotingizni tartiblang</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Ism va Familiya</label>
+                            <input type="text" id="reg-fullname" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none text-sm" placeholder="Ali Valiyev">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Tug'ilgan sana</label>
+                                <input type="date" id="reg-dob" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Tel (Ixtiyoriy)</label>
+                                <input type="tel" id="reg-phone" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none text-sm" placeholder="+998901234567">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Username (Noyob)</label>
+                            <input type="text" id="reg-username" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none text-sm" placeholder="user123">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Parol</label>
+                            <input type="password" id="reg-password" minlength="4" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-xl focus:ring-2 focus:ring-sky-500 outline-none text-sm" placeholder="••••••••">
+                        </div>
+                        <button type="submit" class="w-full py-3 mt-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl shadow-lg shadow-emerald-500/20 active:scale-[0.98] transition">
+                            Ro'yxatdan o'tish <i class="fa-solid fa-check ml-2"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- MAIN DASHBOARD SYSTEM (Visible when logged in) -->
+        <div id="dashboard-screen" class="flex-1 flex overflow-hidden hidden">
+            <!-- SIDEBAR NAV -->
+            <aside id="sidebar" class="w-64 bg-white dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 flex flex-col z-20 absolute md:relative inset-y-0 left-0 transform -translate-x-full md:translate-x-0 transition-transform duration-200 ease-in-out">
+                <!-- App Logo -->
+                <div class="p-5 border-b border-slate-100 dark:border-slate-700 flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-sky-500 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-sky-500/30 font-bold">
+                            <i class="fa-solid fa-cubes text-xl"></i>
+                        </div>
+                        <div>
+                            <h1 class="font-bold text-slate-900 dark:text-white leading-tight">DailyHub</h1>
+                            <span class="text-xs text-sky-600 dark:text-sky-400 font-medium">Uzbekistan Edition</span>
+                        </div>
+                    </div>
+                    <button onclick="toggleSidebar()" class="md:hidden text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+
+                <!-- Navigation Links -->
+                <nav class="flex-1 p-4 space-y-1.5 overflow-y-auto custom-scrollbar">
+                    <button onclick="switchView('dashboard')" id="nav-dashboard" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-chart-pie w-5 text-center"></i><span>Bosh sahifa</span>
+                    </button>
+                    <button onclick="switchView('schedule')" id="nav-schedule" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-calendar-week w-5 text-center"></i><span>Dars va Kun Tartibi</span>
+                    </button>
+                    <button onclick="switchView('tasks')" id="nav-tasks" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-list-check w-5 text-center"></i><span>Vazifalar (To-Do)</span>
+                    </button>
+                    <button onclick="switchView('pomodoro')" id="nav-pomodoro" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-stopwatch w-5 text-center"></i><span>Pomodoro Taymer</span>
+                    </button>
+                    <button onclick="switchView('habits')" id="nav-habits" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-heart-pulse w-5 text-center"></i><span>Odat va Suv</span>
+                    </button>
+                    <button onclick="switchView('reminders')" id="nav-reminders" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-bell w-5 text-center"></i><span>Eslatma va Sanalar</span>
+                    </button>
+                    <button onclick="switchView('notes')" id="nav-notes" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-sticky-note w-5 text-center"></i><span>Tezkor Qaydlar</span>
+                    </button>
+                    <button onclick="switchView('analytics')" id="nav-analytics" class="nav-item w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-xl font-medium text-sm transition">
+                        <i class="fa-solid fa-chart-line w-5 text-center"></i><span>Statistika</span>
+                    </button>
+                </nav>
+
+                <!-- Profile Footer -->
+                <div class="p-4 border-t border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/50">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3 cursor-pointer overflow-hidden" onclick="showProfileModal()">
+                            <div class="w-9 h-9 rounded-full bg-sky-500 flex items-center justify-center text-white font-bold text-sm flex-shrink-0" id="user-avatar">
+                                A
+                            </div>
+                            <div class="truncate">
+                                <h4 class="text-xs font-semibold text-slate-900 dark:text-white truncate" id="user-display-name">Foydalanuvchi</h4>
+                                <p class="text-[11px] text-slate-400 truncate" id="user-display-username">@user</p>
+                            </div>
+                        </div>
+                        <button onclick="handleLogout()" title="Chiqish" class="text-slate-400 hover:text-red-500 transition p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700">
+                            <i class="fa-solid fa-right-from-bracket"></i>
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- SIDEBAR OVERLAY FOR MOBILE -->
+            <div id="sidebar-overlay" onclick="toggleSidebar()" class="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-10 hidden md:hidden"></div>
+
+            <!-- MAIN CONTENT AREA -->
+            <main class="flex-1 flex flex-col min-w-0 bg-slate-50 dark:bg-slate-900 overflow-hidden">
+                <!-- TOP BAR HEADER -->
+                <header class="h-16 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between px-4 md:px-8">
+                    <div class="flex items-center space-x-3">
+                        <button onclick="toggleSidebar()" class="md:hidden text-slate-500 hover:text-slate-700 p-2 rounded-lg bg-slate-100 dark:bg-slate-700">
+                            <i class="fa-solid fa-bars"></i>
+                        </button>
+                        <h2 id="page-title" class="text-lg font-bold text-slate-900 dark:text-white">Bosh sahifa</h2>
+                    </div>
+
+                    <div class="flex items-center space-x-3">
+                        <!-- Theme Toggle Button -->
+                        <button onclick="toggleDarkMode()" class="p-2 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition" title="Mavzuni o'zgartirish">
+                            <i id="theme-icon" class="fa-solid fa-moon"></i>
+                        </button>
+
+                        <!-- Focus Ambient Audio Player Modal Trigger -->
+                        <button onclick="toggleAmbientModal()" class="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 text-xs font-semibold transition">
+                            <i class="fa-solid fa-headphones"></i>
+                            <span class="hidden sm:inline">Fokus Ovozlar</span>
+                        </button>
+                    </div>
+                </header>
+
+                <!-- PAGE VIEWS WRAPPER -->
+                <div class="flex-1 overflow-y-auto p-4 md:p-8 custom-scrollbar">
+                    
+                    <!-- 1. DASHBOARD VIEW -->
+                    <div id="view-dashboard" class="view-content space-y-6">
+                        <!-- Welcome Banner -->
+                        <div class="bg-gradient-to-r from-sky-500 via-indigo-600 to-purple-600 rounded-2xl p-6 text-white shadow-lg shadow-sky-500/10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                            <div>
+                                <span class="px-3 py-1 bg-white/20 backdrop-blur-md rounded-full text-xs font-semibold tracking-wider uppercase">Bugungi Tartib</span>
+                                <h1 class="text-2xl md:text-3xl font-bold mt-2" id="dash-greeting">Salom, Foydalanuvchi!</h1>
+                                <p class="text-sky-100 text-sm mt-1" id="dash-date">Bugun: 1-Yanvar, 2026-yil</p>
+                            </div>
+                            <div class="flex items-center space-x-3 bg-white/10 backdrop-blur-md px-4 py-3 rounded-xl">
+                                <div class="text-center px-2">
+                                    <span class="block text-2xl font-bold" id="dash-streak">0</span>
+                                    <span class="text-[10px] uppercase text-sky-200 font-semibold">Streak kun</span>
+                                </div>
+                                <div class="w-px h-8 bg-white/20"></div>
+                                <div class="text-center px-2">
+                                    <span class="block text-2xl font-bold" id="dash-completed-tasks">0</span>
+                                    <span class="text-[10px] uppercase text-sky-200 font-semibold">Bajarilgan</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Stats Grid Top -->
+                        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center space-x-4">
+                                <div class="w-12 h-12 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center text-xl">
+                                    <i class="fa-solid fa-list-check"></i>
+                                </div>
+                                <div>
+                                    <p class="text-xs font-medium text-slate-400">Bugungi Vazifalar</p>
+                                    <h3 class="text-xl font-bold text-slate-900 dark:text-white" id="stat-tasks-count">0/0</h3>
+                                </div>
+                            </div>
+
+                            <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center space-x-4">
+                                <div class="w-12 h-12 rounded-xl bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400 flex items-center justify-center text-xl">
+                                    <i class="fa-solid fa-stopwatch"></i>
+                                </div>
+                                <div>
+                                    <p class="text-xs font-medium text-slate-400">Fokus Daqiqalari</p>
+                                    <h3 class="text-xl font-bold text-slate-900 dark:text-white" id="stat-pomodoro-min">0 daq</h3>
+                                </div>
+                            </div>
+
+                            <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center space-x-4">
+                                <div class="w-12 h-12 rounded-xl bg-cyan-50 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-400 flex items-center justify-center text-xl">
+                                    <i class="fa-solid fa-droplet"></i>
+                                </div>
+                                <div>
+                                    <p class="text-xs font-medium text-slate-400">Suv Ichish</p>
+                                    <h3 class="text-xl font-bold text-slate-900 dark:text-white" id="stat-water-intake">0 / 2000 ml</h3>
+                                </div>
+                            </div>
+
+                            <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex items-center space-x-4">
+                                <div class="w-12 h-12 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xl">
+                                    <i class="fa-solid fa-calendar-day"></i>
+                                </div>
+                                <div>
+                                    <p class="text-xs font-medium text-slate-400">Bugungi Darslar</p>
+                                    <h3 class="text-xl font-bold text-slate-900 dark:text-white" id="stat-lessons-count">0 ta</h3>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Mid Content Section -->
+                        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <!-- Left 2 Cols: Priority Tasks & Schedule -->
+                            <div class="lg:col-span-2 space-y-6">
+                                <!-- Urgent Tasks -->
+                                <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 border border-slate-100 dark:border-slate-700 shadow-sm">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h3 class="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                            <i class="fa-solid fa-fire text-amber-500"></i> Muhim Vazifalar
+                                        </h3>
+                                        <button onclick="switchView('tasks')" class="text-xs text-sky-600 hover:underline font-semibold">Barchasi <i class="fa-solid fa-arrow-right"></i></button>
+                                    </div>
+                                    <div id="dash-urgent-tasks" class="space-y-2">
+                                        <!-- Dynamic load -->
+                                    </div>
+                                </div>
+
+                                <!-- Today Lessons -->
+                                <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 border border-slate-100 dark:border-slate-700 shadow-sm">
+                                    <div class="flex items-center justify-between mb-4">
+                                        <h3 class="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                            <i class="fa-solid fa-graduation-cap text-sky-500"></i> Bugungi Darslar
+                                        </h3>
+                                        <button onclick="switchView('schedule')" class="text-xs text-sky-600 hover:underline font-semibold">Jadval <i class="fa-solid fa-arrow-right"></i></button>
+                                    </div>
+                                    <div id="dash-today-schedule" class="space-y-2">
+                                        <!-- Dynamic load -->
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Right 1 Col: Quick Habit Widget & Upcoming Dates -->
+                            <div class="space-y-6">
+                                <!-- Mini Habits -->
+                                <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 border border-slate-100 dark:border-slate-700 shadow-sm">
+                                    <h3 class="font-bold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
+                                        <i class="fa-solid fa-heart-pulse text-pink-500"></i> Bugungi Odatlar
+                                    </h3>
+                                    <div id="dash-habits-list" class="space-y-2">
+                                        <!-- Dynamic -->
+                                    </div>
+                                </div>
+
+                                <!-- Important Dates Countdowns -->
+                                <div class="bg-white dark:bg-slate-800 rounded-2xl p-5 border border-slate-100 dark:border-slate-700 shadow-sm">
+                                    <h3 class="font-bold text-slate-900 dark:text-white mb-3 flex items-center gap-2">
+                                        <i class="fa-solid fa-hourglass-half text-indigo-500"></i> Muhim Sanalar Countdown
+                                    </h3>
+                                    <div id="dash-upcoming-dates" class="space-y-2">
+                                        <!-- Dynamic -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 2. SCHEDULE & ROUTINE VIEW -->
+                    <div id="view-schedule" class="view-content hidden space-y-6">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div>
+                                <h2 class="text-xl font-bold text-slate-900 dark:text-white">Dars jadvali va Kun tartibi</h2>
+                                <p class="text-slate-500 text-sm">Haftalik darslar hamda kunlik tartib jadvalingiz</p>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="openModal('modal-add-schedule')" class="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-xl text-sm flex items-center gap-2 shadow-md transition">
+                                    <i class="fa-solid fa-plus"></i> Dars Qo'shish
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Days Tab Bar -->
+                        <div class="flex overflow-x-auto space-x-2 pb-2 custom-scrollbar" id="schedule-days-tabs">
+                            <button onclick="filterScheduleDay('Dushanba')" class="day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-sky-600 text-white">Dushanba</button>
+                            <button onclick="filterScheduleDay('Seshanba')" class="day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">Seshanba</button>
+                            <button onclick="filterScheduleDay('Chorshanba')" class="day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">Chorshanba</button>
+                            <button onclick="filterScheduleDay('Payshanba')" class="day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">Payshanba</button>
+                            <button onclick="filterScheduleDay('Juma')" class="day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">Juma</button>
+                            <button onclick="filterScheduleDay('Shanba')" class="day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">Shanba</button>
+                            <button onclick="filterScheduleDay('Yakshanba')" class="day-tab px-4 py-2 rounded-xl text-sm font-semibold whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400">Yakshanba</button>
+                        </div>
+
+                        <!-- Schedule Items Table/List -->
+                        <div class="bg-white dark:bg-slate-800 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm overflow-hidden">
+                            <div id="schedule-list-container" class="divide-y divide-slate-100 dark:divide-slate-700">
+                                <!-- Dynamic List -->
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 3. TASKS (TO-DO) VIEW -->
+                    <div id="view-tasks" class="view-content hidden space-y-6">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div>
+                                <h2 class="text-xl font-bold text-slate-900 dark:text-white">Vazifalar Ro'yxati (To-Do)</h2>
+                                <p class="text-slate-500 text-sm">Muhim topshiriqlar va loyihalarni boshqaring</p>
+                            </div>
+                            <button onclick="openModal('modal-add-task')" class="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-xl text-sm flex items-center gap-2 shadow-md transition">
+                                <i class="fa-solid fa-plus"></i> Yangi Vazifa
+                            </button>
+                        </div>
+
+                        <!-- Filters & Search -->
+                        <div class="bg-white dark:bg-slate-800 p-4 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex flex-col md:flex-row gap-4 items-center justify-between">
+                            <div class="relative w-full md:w-72">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400"><i class="fa-solid fa-magnifying-glass"></i></span>
+                                <input type="text" id="task-search-input" oninput="renderTasks()" placeholder="Vazifalarni qidirish..." class="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                            </div>
+                            
+                            <div class="flex flex-wrap gap-2 w-full md:w-auto">
+                                <select id="task-filter-status" onchange="renderTasks()" class="bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-xs rounded-xl px-3 py-2 outline-none">
+                                    <option value="all">Barcha Holatlar</option>
+                                    <option value="todo">Bajarilmagan</option>
+                                    <option value="in_progress">Jarayonda</option>
+                                    <option value="completed">Bajarildi</option>
+                                </select>
+                                <select id="task-filter-priority" onchange="renderTasks()" class="bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-xs rounded-xl px-3 py-2 outline-none">
+                                    <option value="all">Barcha Muhimliklar</option>
+                                    <option value="high">Yuqori</option>
+                                    <option value="medium">O'rta</option>
+                                    <option value="low">Past</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Task List -->
+                        <div id="tasks-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <!-- Dynamic Tasks -->
+                        </div>
+                    </div>
+
+                    <!-- 4. POMODORO TIMER VIEW -->
+                    <div id="view-pomodoro" class="view-content hidden space-y-6">
+                        <div class="max-w-2xl mx-auto bg-white dark:bg-slate-800 p-8 rounded-3xl border border-slate-100 dark:border-slate-700 shadow-lg text-center">
+                            <h2 class="text-2xl font-bold text-slate-900 dark:text-white mb-2">Pomodoro Dars Taymeri</h2>
+                            <p class="text-slate-500 text-sm mb-6">Diqqatni bir joyga jamlab 25 minut intensiv dars qiling</p>
+
+                            <!-- Timer Mode Toggle -->
+                            <div class="inline-flex bg-slate-100 dark:bg-slate-700/50 p-1 rounded-2xl mb-8">
+                                <button onclick="setPomodoroMode('focus')" id="pomo-mode-focus" class="px-5 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-slate-800 text-sky-600 shadow-sm transition">Focus (25 daq)</button>
+                                <button onclick="setPomodoroMode('short')" id="pomo-mode-short" class="px-5 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-700 transition">Qisqa Tanaffus (5 daq)</button>
+                                <button onclick="setPomodoroMode('long')" id="pomo-mode-long" class="px-5 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-700 transition">Uzun Tanaffus (15 daq)</button>
+                            </div>
+
+                            <!-- Circular Progress Timer -->
+                            <div class="relative w-64 h-64 mx-auto mb-8 flex items-center justify-center">
+                                <svg class="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
+                                    <circle cx="50" cy="50" r="44" stroke="currentColor" stroke-width="6" class="text-slate-100 dark:text-slate-700" fill="transparent"/>
+                                    <circle id="pomo-progress-circle" cx="50" cy="50" r="44" stroke="currentColor" stroke-width="6" class="text-sky-500 transition-all duration-1000" stroke-dasharray="276.46" stroke-dashoffset="0" stroke-linecap="round" fill="transparent"/>
+                                </svg>
+                                <div class="absolute text-center">
+                                    <span id="pomo-timer-display" class="block text-5xl font-black text-slate-900 dark:text-white tracking-wider">25:00</span>
+                                    <span id="pomo-status-text" class="text-xs uppercase tracking-widest font-bold text-sky-600 dark:text-sky-400 mt-1 block">Fokus Vaqti</span>
+                                </div>
+                            </div>
+
+                            <!-- Controls -->
+                            <div class="flex items-center justify-center space-x-4">
+                                <button id="pomo-start-btn" onclick="togglePomodoro()" class="w-16 h-16 rounded-2xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xl shadow-lg shadow-sky-500/30 flex items-center justify-center active:scale-95 transition">
+                                    <i class="fa-solid fa-play"></i>
+                                </button>
+                                <button onclick="resetPomodoro()" class="w-12 h-12 rounded-xl bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 flex items-center justify-center transition" title="Qaytadan boshlash">
+                                    <i class="fa-solid fa-rotate-right"></i>
+                                </button>
+                            </div>
+
+                            <div class="mt-8 pt-6 border-t border-slate-100 dark:border-slate-700 flex justify-around text-slate-500 text-sm">
+                                <div>
+                                    <span class="block font-bold text-slate-900 dark:text-white text-lg" id="pomo-sessions-count">0</span>
+                                    <span class="text-xs">Bajarilgan seanslar</span>
+                                </div>
+                                <div>
+                                    <span class="block font-bold text-slate-900 dark:text-white text-lg" id="pomo-total-minutes">0</span>
+                                    <span class="text-xs">Jami dars daqiqasi</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 5. HABITS & WATER TRACKER VIEW -->
+                    <div id="view-habits" class="view-content hidden space-y-6">
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <!-- Habits Section -->
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm space-y-4">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <h3 class="text-lg font-bold text-slate-900 dark:text-white">Odatlar Kuzatuvchisi</h3>
+                                        <p class="text-xs text-slate-500">Kunlik odatlaringizni belgilab boring</p>
+                                    </div>
+                                    <button onclick="openModal('modal-add-habit')" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold rounded-xl">
+                                        <i class="fa-solid fa-plus mr-1"></i> Odat Qo'shish
+                                    </button>
+                                </div>
+
+                                <div id="habits-full-list" class="space-y-3">
+                                    <!-- Dynamic habits list -->
+                                </div>
+                            </div>
+
+                            <!-- Water Tracker Section -->
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm flex flex-col items-center justify-between text-center">
+                                <div>
+                                    <h3 class="text-lg font-bold text-slate-900 dark:text-white">Kunlik Suv Balansi</h3>
+                                    <p class="text-xs text-slate-500 mt-1">Sog'lom hayot uchun yetarli suv iching</p>
+                                </div>
+
+                                <div class="my-6 relative flex items-center justify-center">
+                                    <div class="w-40 h-40 rounded-full border-8 border-cyan-100 dark:border-cyan-950 flex flex-col items-center justify-center bg-cyan-50/50 dark:bg-cyan-900/20">
+                                        <i class="fa-solid fa-droplet text-3xl text-cyan-500 mb-1"></i>
+                                        <span id="water-display-amount" class="text-2xl font-black text-slate-900 dark:text-white">0 ml</span>
+                                        <span class="text-[11px] text-slate-400">Maqsad: 2000 ml</span>
+                                    </div>
+                                </div>
+
+                                <div class="grid grid-cols-3 gap-2 w-full">
+                                    <button onclick="addWater(250)" class="py-2.5 bg-cyan-50 hover:bg-cyan-100 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-300 font-semibold text-xs rounded-xl border border-cyan-200 dark:border-cyan-800 transition">
+                                        +250 ml (Stakan)
+                                    </button>
+                                    <button onclick="addWater(500)" class="py-2.5 bg-cyan-50 hover:bg-cyan-100 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-300 font-semibold text-xs rounded-xl border border-cyan-200 dark:border-cyan-800 transition">
+                                        +500 ml (Idish)
+                                    </button>
+                                    <button onclick="resetWater()" class="py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 font-semibold text-xs rounded-xl transition">
+                                        Tozalash
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 6. REMINDERS & DATES VIEW -->
+                    <div id="view-reminders" class="view-content hidden space-y-6">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div>
+                                <h2 class="text-xl font-bold text-slate-900 dark:text-white">Eslatmalar va Muhim Sanalar</h2>
+                                <p class="text-slate-500 text-sm">Imtihonlar, tug'ilgan kunlar va muhim hodisalar countdown'i</p>
+                            </div>
+                            <button onclick="openModal('modal-add-reminder')" class="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-xl text-sm flex items-center gap-2 shadow-md transition">
+                                <i class="fa-solid fa-plus"></i> Yangi Eslatma
+                            </button>
+                        </div>
+
+                        <div id="reminders-list-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            <!-- Dynamic -->
+                        </div>
+                    </div>
+
+                    <!-- 7. STICKY NOTES VIEW -->
+                    <div id="view-notes" class="view-content hidden space-y-6">
+                        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div>
+                                <h2 class="text-xl font-bold text-slate-900 dark:text-white">Tezkor Qaydlar (Sticky Notes)</h2>
+                                <p class="text-slate-500 text-sm">Fikr va g'oyalaringizni zudlik bilan yozib qo'ying</p>
+                            </div>
+                            <button onclick="openModal('modal-add-note')" class="px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-xl text-sm flex items-center gap-2 shadow-md transition">
+                                <i class="fa-solid fa-plus"></i> Qayd Yaratish
+                            </button>
+                        </div>
+
+                        <div id="notes-container" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <!-- Dynamic notes -->
+                        </div>
+                    </div>
+
+                    <!-- 8. ANALYTICS & STATS VIEW -->
+                    <div id="view-analytics" class="view-content hidden space-y-6">
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-900 dark:text-white">Statistika va Tahlillar</h2>
+                            <p class="text-slate-500 text-sm">Bajarilgan vazifalar va Pomodoro mashg'ulotlari statistikasi</p>
+                        </div>
+
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <!-- Task Completion Chart -->
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm">
+                                <h3 class="font-bold text-slate-900 dark:text-white mb-4">Vazifalar Bajarilish Darajasi</h3>
+                                <div class="h-64 flex items-center justify-center">
+                                    <canvas id="chart-tasks"></canvas>
+                                </div>
+                            </div>
+
+                            <!-- Focus Time Weekly Chart -->
+                            <div class="bg-white dark:bg-slate-800 p-6 rounded-2xl border border-slate-100 dark:border-slate-700 shadow-sm">
+                                <h3 class="font-bold text-slate-900 dark:text-white mb-4">Haftalik O'qish Soatlari (Pomodoro)</h3>
+                                <div class="h-64 flex items-center justify-center">
+                                    <canvas id="chart-focus"></canvas>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- MODALS SECTION -->
+    
+    <!-- Modal: Add Schedule Item -->
+    <div id="modal-add-schedule" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 p-6">
+            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4">Dars yoki Reja Qo'shish</h3>
+            <form onsubmit="saveScheduleItem(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Hafta Kuni</label>
+                    <select id="sch-day" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                        <option value="Dushanba">Dushanba</option>
+                        <option value="Seshanba">Seshanba</option>
+                        <option value="Chorshanba">Chorshanba</option>
+                        <option value="Payshanba">Payshanba</option>
+                        <option value="Juma">Juma</option>
+                        <option value="Shanba">Shanba</option>
+                        <option value="Yakshanba">Yakshanba</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Fan yoki Faoliyat nomi</label>
+                    <input type="text" id="sch-title" required placeholder="Masalan: Matematika" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Boshlanish vaqti</label>
+                        <input type="time" id="sch-start" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Tugash vaqti</label>
+                        <input type="time" id="sch-end" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Xona / Havola / Izoh</label>
+                    <input type="text" id="sch-room" placeholder="304-xona yoki Zoom link" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" onclick="closeModal('modal-add-schedule')" class="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-xl text-sm">Bekor qilish</button>
+                    <button type="submit" class="px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-semibold">Saqlash</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: Add Task -->
+    <div id="modal-add-task" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 p-6">
+            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4">Yangi Vazifa Qo'shish</h3>
+            <form onsubmit="saveTaskItem(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Vazifa Sarlavhasi</label>
+                    <input type="text" id="task-title" required placeholder="Masalan: Fizika insho yozish" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Muhimlik darajasi</label>
+                        <select id="task-priority" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                            <option value="high">Yuqori (Shoshilinch)</option>
+                            <option value="medium" selected>O'rta</option>
+                            <option value="low">Past</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Oxirgi muddat (Deadline)</label>
+                        <input type="date" id="task-date" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Kategoriya</label>
+                    <select id="task-category" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                        <option value="O'qish">O'qish</option>
+                        <option value="Shaxsiy">Shaxsiy</option>
+                        <option value="Ish">Ish</option>
+                    </select>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" onclick="closeModal('modal-add-task')" class="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-xl text-sm">Bekor qilish</button>
+                    <button type="submit" class="px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-semibold">Qo'shish</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: Add Habit -->
+    <div id="modal-add-habit" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 p-6">
+            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4">Yangi Odat Qo'shish</h3>
+            <form onsubmit="saveHabitItem(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Odat Nomi</label>
+                    <input type="text" id="habit-title" required placeholder="Masalan: Kitob o'qish (20 bet)" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Belgilangan icon</label>
+                    <select id="habit-icon" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                        <option value="fa-book">Kitob 📖</option>
+                        <option value="fa-person-running">Yugurish 🏃</option>
+                        <option value="fa-brain">Meditatsiya 🧘</option>
+                        <option value="fa-dumbbell">Sport 🏋️</option>
+                        <option value="fa-code">Dasturlash 💻</option>
+                    </select>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" onclick="closeModal('modal-add-habit')" class="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-xl text-sm">Bekor qilish</button>
+                    <button type="submit" class="px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-semibold">Qo'shish</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: Add Reminder -->
+    <div id="modal-add-reminder" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 p-6">
+            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4">Eslatma yoki Sana Qo'shish</h3>
+            <form onsubmit="saveReminderItem(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Hodisa Nomi</label>
+                    <input type="text" id="rem-title" required placeholder="Masalan: IELTS Imtihoni" class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Sana</label>
+                    <input type="date" id="rem-date" required class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" onclick="closeModal('modal-add-reminder')" class="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-xl text-sm">Bekor qilish</button>
+                    <button type="submit" class="px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-semibold">Saqlash</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: Add Sticky Note -->
+    <div id="modal-add-note" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 p-6">
+            <h3 class="text-lg font-bold text-slate-900 dark:text-white mb-4">Tezkor Qayd Yaratish</h3>
+            <form onsubmit="saveStickyNote(event)" class="space-y-4">
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Qayd Sarlavhasi</label>
+                    <input type="text" id="note-title" required placeholder="Fikr sarlavhasi..." class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Matn</label>
+                    <textarea id="note-text" required rows="3" placeholder="Fikringizni shu yerga yozing..." class="w-full px-3 py-2 bg-slate-50 dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-xl text-sm outline-none"></textarea>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold uppercase text-slate-400 mb-1">Rang</label>
+                    <div class="flex space-x-2">
+                        <label class="cursor-pointer"><input type="radio" name="note-color" value="yellow" checked class="peer hidden"><span class="w-8 h-8 rounded-full bg-amber-200 block peer-checked:ring-2 peer-checked:ring-sky-500"></span></label>
+                        <label class="cursor-pointer"><input type="radio" name="note-color" value="blue" class="peer hidden"><span class="w-8 h-8 rounded-full bg-sky-200 block peer-checked:ring-2 peer-checked:ring-sky-500"></span></label>
+                        <label class="cursor-pointer"><input type="radio" name="note-color" value="green" class="peer hidden"><span class="w-8 h-8 rounded-full bg-emerald-200 block peer-checked:ring-2 peer-checked:ring-sky-500"></span></label>
+                        <label class="cursor-pointer"><input type="radio" name="note-color" value="purple" class="peer hidden"><span class="w-8 h-8 rounded-full bg-purple-200 block peer-checked:ring-2 peer-checked:ring-sky-500"></span></label>
+                    </div>
+                </div>
+                <div class="flex justify-end space-x-2 pt-2">
+                    <button type="button" onclick="closeModal('modal-add-note')" class="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-xl text-sm">Bekor qilish</button>
+                    <button type="submit" class="px-4 py-2 bg-sky-600 text-white rounded-xl text-sm font-semibold">Qo'shish</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal: User Profile -->
+    <div id="modal-profile" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 p-6">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold text-slate-900 dark:text-white">Profil Ma'lumotlari</h3>
+                <button onclick="closeModal('modal-profile')" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="space-y-3 text-sm" id="profile-modal-content">
+                <!-- Dynamic profile specs -->
+            </div>
+            <div class="mt-6 pt-4 border-t border-slate-100 dark:border-slate-700 flex justify-end">
+                <button onclick="handleLogout()" class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-xl">
+                    <i class="fa-solid fa-right-from-bracket mr-1"></i> Hisobdan chiqish
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Ambient Audio Drawer Modal -->
+    <div id="modal-ambient" class="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white dark:bg-slate-800 w-full max-w-sm rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-700 p-6 space-y-4">
+            <div class="flex justify-between items-center">
+                <h3 class="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <i class="fa-solid fa-headphones text-indigo-500"></i> Fokus Ambient Ovozlar
+                </h3>
+                <button onclick="toggleAmbientModal()" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <p class="text-xs text-slate-500">Dars qilish paytida chalg'imaslik uchun yordamchi fan ovozlari</p>
+            
+            <div class="space-y-3">
+                <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700/50 rounded-xl">
+                    <span class="text-sm font-medium"><i class="fa-solid fa-cloud-rain mr-2 text-sky-500"></i> Yomg'ir ovozi</span>
+                    <button onclick="playAmbientSound('rain')" class="p-2 rounded-lg bg-sky-600 text-white text-xs">Ijro / To'xtatish</button>
+                </div>
+                <div class="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-700/50 rounded-xl">
+                    <span class="text-sm font-medium"><i class="fa-solid fa-tree mr-2 text-emerald-500"></i> O'rmon shamoli</span>
+                    <button onclick="playAmbientSound('forest')" class="p-2 rounded-lg bg-emerald-600 text-white text-xs">Ijro / To'xtatish</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
